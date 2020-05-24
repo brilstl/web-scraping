@@ -1,0 +1,351 @@
+---
+title: "scraping a javascript based website"
+author: ""
+date: ""
+output:
+  html_document:
+    css: xaringan.css
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = T)
+
+library(tidyverse)
+library(rvest)
+library(RSelenium)
+
+```
+<br>
+<br>
+
+# Introduction
+
+This article shows the process of how I scraped a website. This article heavily depends on `{tidyverse}` ecosystem and thus presumes that you have knowledge of wrangling with `{dplyr}` and programming with `{purrr}`. <br><br>Scraping a website means to receive unstructured information - in this case from a website - and saving it in a structured format (i.e. data frame). Because some websites are rendered through javascript, the act of scraping a website is not as straightforward as just taking out bits and pieces from a html document. In order to scrape a javascript website, you need to perform the following steps:
+<br>
+<br>
+<br>
+
+0. Are we allowed to scrape?
+
+Before starting to scrape, one should always check the `robot.txt` file to see if one is allowed to scrape a website:
+
+```{r}
+
+robotstxt::paths_allowed("https://www.meesterbaan.nl")
+
+```
+
+1. set up a session
+
+In order to set up a session, we lauch a Docker **in the terminal**. If you haven't installed Docker yet, then check out [this tutorial](https://medium.com/@yutafujii_59175/a-complete-one-by-one-guide-to-install-docker-on-your-mac-os-using-homebrew-e818eb4cfc3) on how to install Docker on your device.
+<br>
+<br>
+```{r eval=FALSE, results='hide'}
+
+docker-machine start default
+
+```
+<br>
+
+After Docker is installed and a Docker machine is running, you need to install a web browser within the Docker machine:
+<br>
+<br>
+```{r eval=FALSE, results='hide'}
+
+docker run -d -p 4445:4444 selenium/standalone-chrome
+
+```
+<br>
+
+This Docker session is used to set up the connection with the website via the `{Rselenium}`.
+<br>
+<br>
+```{r results='hide'}
+
+## open server via docker ----
+
+remDr <- remoteDriver(
+        remoteServerAddr = "192.168.99.100",
+        port = 4445L,
+        browserName = "chrome"
+)
+
+remDr$open()
+
+```
+<br>
+
+In this example, we are scraping a Dutch website with vacancies for school teachers of primary and high school education in Amsterdam. But before we do this, we need to take a look at the website and see which information we want to capture.
+
+<br>
+<br>
+```{r results='hide'}
+## website url ----
+
+url <- "https://www.meesterbaan.nl/onderwijs/vacatures.aspx?functie=alle%20functies&regio=amsterdam&doelgroep=2&id_sector=-1&filter=&s=Datum"
+
+
+## direct to website ----
+
+remDr$navigate(url)
+
+```
+<br>
+<br>
+
+2. understand the website's structure
+
+<br>
+After setting up a 'live' connection with the website, the html/javascript-structure of the websites need to be unravelled. For this quest, I used the browser add-in called __selectorgadget__ . With the use of selector gadget you can see that the links are nested within the `.vacancyText` > `h2` > `a` bit of the html. Additionaly I saved the id-code within the href to check for unique vacancies. To extract the information, I used the workflow provided by the `{tidyverse}` ecosystem and especially the `{rvest}` package.
+<br>
+<br>
+```{r results='hide'}
+
+## scrape hrefs from first page ----
+
+hrefs <- tibble(url = read_html(remDr$getPageSource()[[1]]) %>%
+                        html_nodes(".vacancyText") %>%
+                        html_nodes('h2') %>% 
+                        html_nodes('a') %>% 
+                        html_attr("href")) %>% 
+        mutate(id = str_extract(url,'(?<!\\d)[0-9]{6}(?!\\d)'))
+
+```
+<br>
+
+3. map through the pages
+
+<br>
+The trickiest part - for me at least - was to scroll through the different pages on a website that is rendered through javascript. I ended up finding a solution within the documentation of `{Rselenium}` [here](https://cran.r-project.org/web/packages/RSelenium/vignettes/basics.html). I will run through the solutions I came up with in the following three subsections.
+<br>
+<br>
+
++ Check number of vacancies, thus pages
+
+<br>
+On the first page that is visited, the number of vacancies are shown in this `#ctl00_plhControl_lblMessage` node. Each page shows ten vacancies, therefore we divide the number of vacancies by ten and then make sure that all the vacancies are included in the following line `mutate(. = ceiling(./10) * 10)`.
+<br>
+```{r results='hide'}
+
+## Check how many pages to scrape ----
+
+page <- read_html(remDr$getPageSource()[[1]]) %>%
+        html_nodes("#ctl00_plhControl_lblMessage") %>% 
+        html_children() %>% 
+        html_text() %>% 
+        as.numeric() %>%
+        tibble() %>% 
+        mutate(. = ceiling(./10) * 10) %/%
+        10
+
+```
+<br>
+
++ Replacing every sixth number with a <b>></b>
+
+<br>
+After every five pages the page scroller uses a `>` to go to the next five pages. In order to simulate this behaviour, we use the next piece of code.
+<br>
+```{r results='hide'}
+
+## create tibble with page id's to scroll through ----
+
+scroller <- tibble(x = c(1:page$.)) %>%
+        transmute(
+                arrow =
+                        case_when(x %in% c(seq(6, page$., 5)) ~ ">",
+                                  TRUE ~ NA_character_),
+                arrow = coalesce(arrow, as.character(x))
+        )
+
+```
+<br>
+
++ creating a function that scrolls through the pages
+
+This piece of code is a bit longer because of different parts being put together. The function starts off with entering a new page by:
+
+<b>I. locating the button that brings us to a new page</b><br>
+
+In this part I use the solution that I found in the `{Rselenium}` vignette. The following code identifies the button: `remDr$findElements(using = "css", ".PageNumbers")`. The following piece selects the next page and with the ` webElem$clickElement()` the actual button is clicked on. 
+
+<b>II. by taking the links of all the individual vacancies</b>
+
+The second part of the code is repetition and saves all the links and IDs in a tibble (i.e. data frame).
+
+```{r results='hide'}
+
+## create function which can scroll through javascript post content ----
+
+scrol_ler <- function(scroll) {
+  
+  Sys.sleep(3)
+  
+  webElems <- remDr$findElements(using = "css", ".PageNumbers")
+  
+  resHeaders <- webElems %>%
+    map_chr(~ unlist(.x$getElementText()))
+  
+  
+  webElem <- webElems[[which(resHeaders == scroll)]]
+  
+  webElem$clickElement()
+  
+  Sys.sleep(3)
+  
+  tibble(
+    url = xml2::read_html(remDr$getPageSource()[[1]]) %>%
+      rvest::html_nodes(".vacancyText") %>%
+      html_nodes('h2') %>%
+      html_nodes('a') %>%
+      html_attr("href")
+  ) %>%
+    mutate(id = str_extract(url, '(?<!\\d)[0-9]{6}(?!\\d)'))
+  
+  
+}
+
+```
+<br>
+
+4. extract the information
+
+<br>
+After figuring this out I extracted the information in two parts. First, I scrolled through the different pages to obtain the links from the vacancies listed on the website. 
+<br>
+```{r results='hide'}
+
+## scrape hrefs from first page ----
+
+hrefs <- tibble(url = read_html(remDr$getPageSource()[[1]]) %>%
+                        html_nodes(".vacancyText") %>%
+                        html_nodes('h2') %>% 
+                        html_nodes('a') %>% 
+                        html_attr("href")) %>% 
+        mutate(id = str_extract(url,'(?<!\\d)[0-9]{6}(?!\\d)'))
+
+## map through the other pages and scrape the href from those pages ----
+
+hrefs2 <- scroller %>% 
+        mutate(hrefs = map(arrow, possibly(scrol_ler, NA)))
+
+## Bind the two tibbles together ----
+
+hrefs_all <- hrefs2 %>% 
+        unnest() %>% 
+        select(-arrow) %>% 
+        bind_rows(hrefs)
+
+```
+<br>
+
+Secondly, I go to all the links individually to get the actual content that I am looking for. To obtain the wanted information, I use a longer bit of code, which is shown within the `go_school` function. With this function I map over all the links that we obtained in the previous code block (tibble: `hrefs_all`).
+
+```{r eval=F}
+
+## function to get vacancy information ----
+
+go_school <- function(url) {
+
+remDr$navigate(glue::glue("{url}"))
+        
+        Sys.sleep(
+                sample(3:6, 1)
+        )
+        
+### school name
+        
+school_name = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblSchool') %>% 
+        html_text()
+
+### street name
+
+street_name = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblStraatnaam') %>% 
+        html_text()
+
+### postal adress
+
+postal = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblPostalcode') %>% 
+        html_text()
+
+### city
+
+city = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblPlaats') %>% 
+        html_text()
+
+### type of eduction
+
+edu_type = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblTypeOnderwijs') %>% 
+        html_text()
+
+### date of vacancy posting
+
+entry_date = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblPlaatsing2') %>% 
+        html_text()
+
+### date of vacancy closing
+
+closing_date = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblSluitingsDatum') %>% 
+        html_text()
+
+### Starting date 
+
+starting_date <- read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblMetIngang') %>% 
+        html_text()
+
+### type of contract
+
+contract <- read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes('#ctl00_plhControl_lblDienstverband') %>% 
+        html_text()
+
+### Job description
+
+description <- read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes("#ctl00_plhControl_lblOmschrijving") %>% 
+        html_text()
+
+tibble(school_name = if(length(school_name) == 0) NA_character_ else school_name,
+       street_name = if(length(street_name) == 0) NA_character_ else street_name,
+       postal = if(length(postal) == 0) NA_character_ else postal,
+       city = if(length(city) == 0) NA_character_ else city,
+       edu_type = if(length(edu_type) == 0) NA_character_ else edu_type,
+       entry_date = if(length(entry_date) == 0) NA_character_ else entry_date,
+       closing_date = if(length(closing_date) == 0) NA_character_ else closing_date,
+       starting_date = if(length(starting_date) == 0) NA_character_ else starting_date,
+       contract = if(length(contract) == 0) NA_character_ else contract,
+       description = if(length(description) == 0) NA_character_ else description)
+
+}
+
+### map over all the links with the go_school function
+
+vacancies <- hrefs_all %>% 
+        mutate(info = map(url, go_school))
+
+```
+
+<br>
+<br>
+
+5. Additional information
+
+In a following post, I will do an analysis of the description of the vacancies through a natural language processing technic. 
+<br>
+
+Bellow my session information is shown. You can take a look at the entire code within my Github repro. Remember to shut down your Docker container after you are done with your analysis.
+
+```{r}
+
+sessionInfo()
+
+```

@@ -1,0 +1,67 @@
+@import url("//fonts.googleapis.com/css2?family=Baloo+Bhaina+2&display=swap");
+
+.left-column {
+    color: #FEC613;
+}
+
+
+img {
+  max-width: 100%;
+
+}
+
+body {
+    font-family: 'Baloo Bhaina 2';
+    position: relative;
+    left: 0.55in;
+    margin: auto 0.55in 0.3in auto;
+    line-height: 1.8;
+    font-size: 1.8rem;
+
+}
+
+h1 {
+  text-transform: uppercase;
+  font-weight: 100;
+  font-size: 1.8rem;
+  line-height: 1.5;
+  position: relative;
+  left: 0.55in;
+  margin: auto 0.55in 0.3in auto;
+  color: #D33F49 ;
+}
+
+li {
+  
+  text-transform: uppercase;
+  font-weight: 10;
+  color: #D33F49 ;
+  
+}
+
+pre code {
+  font-weight: 1000;
+  color: #3C674D ;
+  font-family: 'Baloo Bhaina 2';
+  line-height: 1.8;
+  font-size: 1.4rem;
+
+
+}
+
+.r {
+  color: black ;
+  font-weight: 300 ;
+  font-family: 'Baloo Bhaina 2' ;
+  background-color: #FFFEF6 ;
+  border-color: #FFFFF6 ;
+  opacity: .8 ;
+  
+}
+
+a:link {
+  color: #77BA99;
+}
+
+
+
